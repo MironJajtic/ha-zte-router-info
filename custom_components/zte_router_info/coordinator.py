@@ -1,21 +1,37 @@
+
 from __future__ import annotations
 from datetime import timedelta
 import logging
 import aiohttp
 import async_timeout
 import hashlib
-import re
-import base64
+import json
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 _LOGGER = logging.getLogger(__name__)
 
+# Primary signal/CA metrics endpoint (from user's router)
+PRIMARY_CMD = (
+    "isTest=false&cmd="
+    "network_type,rssi,rscp,lte_rsrp,Z5g_snr,Z5g_rsrp,ZCELLINFO_band,Z5g_dlEarfcn,"
+    "lte_ca_pcell_arfcn,lte_ca_pcell_band,lte_ca_scell_band,lte_ca_pcell_bandwidth,"
+    "lte_ca_scell_info,lte_ca_scell_bandwidth,wan_lte_ca,Z_PCI,Z5g_CELL_ID,Z5g_SINR,"
+    "cell_id,wan_lte_ca,lte_ca_pcell_band,lte_ca_pcell_bandwidth,lte_ca_scell_band,"
+    "lte_ca_scell_bandwidth,lte_ca_pcell_arfcn,lte_ca_scell_arfcn,lte_multi_ca_scell_info,"
+    "ZCELLINFO_band,Z5g_PCI,Z5g_CELLINFO_band,Z5g_CELL_ID,sinr,ecio,Z_dl_earfcn,Z5g_dlEarfcn"
+    "&multi_data=1"
+)
+
+# Some general status pages that often exist on ZTE firmwares
 STATUS_QUERIES = [
-    "isTest=false&cmd=network_type,rssi,lte_rsrp,sinr,ZCELLINFO_band,Z_PCI,cell_id,wan_lte_ca&multi_data=1",
-    "isTest=false&cmd=modem_main_state,signalbar,network_provider_fullname,lan_ipaddr,realtime_tx_thrpt,realtime_rx_thrpt,monthly_rx_bytes,monthly_tx_bytes,cr_version,wifi_chip1_ssid1_ssid&multi_data=1",
+    PRIMARY_CMD,
+    "isTest=false&cmd=modem_main_state,signalbar,network_provider_fullname,lan_ipaddr,"
+    "realtime_tx_thrpt,realtime_rx_thrpt,monthly_rx_bytes,monthly_tx_bytes,cr_version,"
+    "wifi_chip1_ssid1_ssid&multi_data=1",
     "isTest=false&cmd=wan_ipaddr",
-    "isTest=false&cmd=sms_capacity_info"
+    "isTest=false&cmd=sms_capacity_info",
 ]
 
 
@@ -31,69 +47,68 @@ class ZteApi:
     async def async_close(self):
         await self._session.close()
 
-    async def _fetch_token(self) -> str | None:
-        """Fetch login token from index page."""
+    async def _get_ld(self) -> str:
+        """Fetch LD challenge token (may be empty on some firmwares)."""
+        url = f"{self._base_get}?isTest=false&cmd=LD"
         try:
-            async with async_timeout.timeout(5):
-                async with self._session.get(f"http://{self._host}/") as resp:
+            async with async_timeout.timeout(8):
+                async with self._session.get(url) as resp:
                     if resp.status != 200:
-                        return None
-                    html = await resp.text()
-                    # Match 'var token = "abcd1234";' or similar
-                    m = re.search(r'var\\s+token\\s*=\\s*"(.*?)"', html)
-                    if m:
-                        return m.group(1)
+                        return ""
+                    text = await resp.text()
+                    try:
+                        data = json.loads(text)
+                        ld = data.get("LD", "") or ""
+                        return str(ld).strip()
+                    except Exception:
+                        return ""
         except Exception as e:
-            _LOGGER.debug("Token fetch failed: %s", e)
-        return None
+            _LOGGER.debug("Failed to fetch LD token: %s", e)
+            return ""
 
-    async def _login_hashed(self, token: str) -> bool:
-        """Login using SHA256(password+token)."""
-        hashed_pw = hashlib.sha256((self._password + token).encode()).hexdigest()
-        payload = f"isTest=false&goformId=LOGIN&password={hashed_pw}"
+    async def _login_adaptive(self) -> bool:
+        """Login supporting MF297D2-style LD hashing and plain SHA256(password)."""
+        # Compute base hash of password
+        hash1 = hashlib.sha256(self._password.encode()).hexdigest().upper()
+        ld = await self._get_ld()
+
+        # If LD present, do double-hash; otherwise try single SHA256
+        if ld:
+            to_send = hashlib.sha256((hash1 + ld).encode()).hexdigest().upper()
+        else:
+            to_send = hash1
+
+        payload = f"isTest=false&goformId=LOGIN&password={to_send}"
         try:
             async with async_timeout.timeout(10):
                 async with self._session.post(self._base_set, data=payload) as resp:
                     text = await resp.text()
-                    if resp.status == 200 and "OK" in text or "success" in text or "0" in text:
+                    if resp.status == 200 and any(x in text for x in ('"0"', 'OK', 'success')):
                         self._logged_in = True
+                        _LOGGER.debug("ZTE login succeeded (LD=%s)", "present" if ld else "empty")
                         return True
+                    _LOGGER.debug("ZTE login response: %s", text)
         except Exception as e:
-            _LOGGER.debug("Hashed login failed: %s", e)
-        return False
+            _LOGGER.debug("Login POST failed: %s", e)
 
-    async def _login_plain(self) -> bool:
-        """Login using Base64-encoded password (required by MF297D2)."""
+        # Final fallback: send plain password (a few odd firmwares accept this)
+        payload_plain = f"isTest=false&goformId=LOGIN&password={self._password}"
         try:
-            encoded_pw = base64.b64encode(self._password.encode()).decode()
-            payload = f"isTest=false&goformId=LOGIN&password={encoded_pw}"
             async with async_timeout.timeout(10):
-                async with self._session.post(self._base_set, data=payload) as resp:
+                async with self._session.post(self._base_set, data=payload_plain) as resp:
                     text = await resp.text()
-                    if resp.status == 200 and any(ok in text for ok in ["OK", "success", "0"]):
+                    if resp.status == 200 and any(x in text for x in ('"0"', 'OK', 'success')):
                         self._logged_in = True
-                        _LOGGER.debug("ZTE login successful (Base64)")
+                        _LOGGER.debug("ZTE login succeeded (plain password fallback)")
                         return True
+                    _LOGGER.debug("ZTE login plain response: %s", text)
         except Exception as e:
-            _LOGGER.debug("Base64 login failed: %s", e)
-        return False
+            _LOGGER.debug("Plain login POST failed: %s", e)
 
-    async def login(self) -> bool:
-        """Auto-detect login method."""
-        # Try hashed first
-        token = await self._fetch_token()
-        if token:
-            if await self._login_hashed(token):
-                _LOGGER.debug("ZTE login (hashed) succeeded")
-                return True
-        # Try plain
-        if await self._login_plain():
-            _LOGGER.debug("ZTE login (plain) succeeded")
-            return True
-        _LOGGER.warning("ZTE login failed using both methods")
         return False
 
     async def test_and_login(self) -> bool:
+        # Touch the GET endpoint to verify router is reachable
         try:
             async with async_timeout.timeout(5):
                 async with self._session.get(self._base_get) as resp:
@@ -101,12 +116,16 @@ class ZteApi:
                         return False
         except Exception:
             return False
-        return await self.login()
+        return await self._login_adaptive()
 
     async def fetch_all(self) -> dict:
+        """Fetch and merge several status dicts. Requires prior successful login."""
         if not self._logged_in:
-            await self.login()
-        data = {}
+            ok = await self._login_adaptive()
+            if not ok:
+                return {}
+
+        merged: dict = {}
         for q in STATUS_QUERIES:
             url = f"{self._base_get}?{q}"
             try:
@@ -114,21 +133,25 @@ class ZteApi:
                     async with self._session.get(url) as resp:
                         if resp.status != 200:
                             continue
+                        # Some endpoints return JSON, others plain text
                         try:
                             chunk = await resp.json(content_type=None)
                             if isinstance(chunk, dict):
-                                data.update(chunk)
+                                merged.update(chunk)
                         except Exception:
-                            # Non-JSON or empty
-                            pass
+                            text = await resp.text()
+                            # best-effort: ignore non-JSON
+                            _LOGGER.debug("Non-JSON from %s: %s", url, text[:120])
             except Exception as e:
                 _LOGGER.debug("Fetch error from %s: %s", url, e)
 
-        # Retry once if all empty
-        if not any(v not in ("", None) for v in data.values()):
-            await self.login()
-            return await self.fetch_all()
-        return data
+        # If all values are empty, retry once after re-login
+        if not any(v not in ("", None) for v in merged.values()):
+            _LOGGER.debug("All values empty, retrying after re-login")
+            self._logged_in = False
+            if await self._login_adaptive():
+                return await self.fetch_all()
+        return merged
 
 
 class ZteCoordinator(DataUpdateCoordinator):
