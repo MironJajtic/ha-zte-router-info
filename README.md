@@ -1,4 +1,16 @@
+# ZTE Router Info (MF297D2 and similar)
+
 [![Build and Release](https://github.com/MironJajtic/ha-zte-router-info/actions/workflows/release.yml/badge.svg)](https://github.com/MironJajtic/ha-zte-router-info/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/release/MironJajtic/ha-zte-router-info.svg)](https://github.com/MironJajtic/ha-zte-router-info/releases/)
+![GitHub License](https://img.shields.io/github/license/MironJajtic/ha-zte-router-info)
+![GitHub Stars](https://img.shields.io/github/stars/MironJajtic/ha-zte-router-info)
+
+![Contributors](https://img.shields.io/github/contributors/MironJajtic/ha-zte-router-info)
+![Maintenance](https://img.shields.io/maintenance/yes/2025)
+![Last Commit](https://img.shields.io/github/last-commit/MironJajtic/ha-zte-router-info)
+![Commit Activity](https://img.shields.io/github/commit-activity/y/MironJajtic/ha-zte-router-info)
+![Installation Count](https://img.shields.io/badge/dynamic/json?color=41BDF5&logo=home-assistant&label=integration%20usage&suffix=%20installs&cacheSeconds=15600&url=https://analytics.home-assistant.io/custom_integrations.json&query=$.zte_router_info.total)
+
 
 # ZTE Router Info (MF297D2 and similar)
 
