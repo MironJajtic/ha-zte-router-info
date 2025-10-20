@@ -18,9 +18,9 @@ jobs:
       - name: Zip integration
         run: |
           mkdir -p dist
-          cd custom_components
-          zip -r ../dist/zte_router_info.zip zte_router_info
-          cd ..
+          cd custom_components/zte_router_info
+          zip -r ../../dist/zte_router_info.zip .
+          cd ../..
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

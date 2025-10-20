@@ -1,3 +1,5 @@
+[![Build and Release](https://github.com/MironJajtic/ha-zte-router-info/actions/workflows/release.yml/badge.svg)](https://github.com/MironJajtic/ha-zte-router-info/actions/workflows/release.yml)
+
 # ZTE Router Info (MF297D2 and similar)
 
 A lightweight Home Assistant integration that exposes LTE radio metrics, throughput, version,
