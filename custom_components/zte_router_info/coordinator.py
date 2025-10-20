@@ -5,6 +5,7 @@ import aiohttp
 import async_timeout
 import hashlib
 import re
+import base64
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -62,17 +63,19 @@ class ZteApi:
         return False
 
     async def _login_plain(self) -> bool:
-        """Fallback: plain password login."""
-        payload = f"isTest=false&goformId=LOGIN&password={self._password}"
+        """Login using Base64-encoded password (required by MF297D2)."""
         try:
+            encoded_pw = base64.b64encode(self._password.encode()).decode()
+            payload = f"isTest=false&goformId=LOGIN&password={encoded_pw}"
             async with async_timeout.timeout(10):
                 async with self._session.post(self._base_set, data=payload) as resp:
                     text = await resp.text()
-                    if resp.status == 200 and ("OK" in text or "success" in text or "0" in text):
+                    if resp.status == 200 and any(ok in text for ok in ["OK", "success", "0"]):
                         self._logged_in = True
+                        _LOGGER.debug("ZTE login successful (Base64)")
                         return True
         except Exception as e:
-            _LOGGER.debug("Plain login failed: %s", e)
+            _LOGGER.debug("Base64 login failed: %s", e)
         return False
 
     async def login(self) -> bool:
