@@ -1,0 +1,11 @@
+{
+  "name": "ZTE Router Info",
+  "domain": "zte_router_info",
+  "country": "all",
+  "homeassistant": "2024.1.0",
+  "render_readme": true,
+  "iot_class": "local_polling",
+  "filename": "zte_router_info.zip",
+  "zip_release": true,
+  "hide_default_branch": false
+}
