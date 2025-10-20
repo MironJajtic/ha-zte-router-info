@@ -3,6 +3,8 @@ from datetime import timedelta
 import logging
 import aiohttp
 import async_timeout
+import hashlib
+import re
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -15,11 +17,12 @@ STATUS_QUERIES = [
     "isTest=false&cmd=sms_capacity_info"
 ]
 
+
 class ZteApi:
     def __init__(self, host: str, password: str):
         self._host = host
         self._password = password
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar())
         self._base_get = f"http://{host}/goform/goform_get_cmd_process"
         self._base_set = f"http://{host}/goform/goform_set_cmd_process"
         self._logged_in = False
@@ -27,17 +30,64 @@ class ZteApi:
     async def async_close(self):
         await self._session.close()
 
-    async def login(self) -> bool:
+    async def _fetch_token(self) -> str | None:
+        """Fetch login token from index page."""
         try:
-            payload = f"isTest=false&goformId=LOGIN&password={self._password}"
+            async with async_timeout.timeout(5):
+                async with self._session.get(f"http://{self._host}/") as resp:
+                    if resp.status != 200:
+                        return None
+                    html = await resp.text()
+                    # Match 'var token = "abcd1234";' or similar
+                    m = re.search(r'var\\s+token\\s*=\\s*"(.*?)"', html)
+                    if m:
+                        return m.group(1)
+        except Exception as e:
+            _LOGGER.debug("Token fetch failed: %s", e)
+        return None
+
+    async def _login_hashed(self, token: str) -> bool:
+        """Login using SHA256(password+token)."""
+        hashed_pw = hashlib.sha256((self._password + token).encode()).hexdigest()
+        payload = f"isTest=false&goformId=LOGIN&password={hashed_pw}"
+        try:
             async with async_timeout.timeout(10):
                 async with self._session.post(self._base_set, data=payload) as resp:
-                    if resp.status == 200:
+                    text = await resp.text()
+                    if resp.status == 200 and "OK" in text or "success" in text or "0" in text:
                         self._logged_in = True
                         return True
         except Exception as e:
-            _LOGGER.debug("Login exception: %s", e)
-        self._logged_in = False
+            _LOGGER.debug("Hashed login failed: %s", e)
+        return False
+
+    async def _login_plain(self) -> bool:
+        """Fallback: plain password login."""
+        payload = f"isTest=false&goformId=LOGIN&password={self._password}"
+        try:
+            async with async_timeout.timeout(10):
+                async with self._session.post(self._base_set, data=payload) as resp:
+                    text = await resp.text()
+                    if resp.status == 200 and ("OK" in text or "success" in text or "0" in text):
+                        self._logged_in = True
+                        return True
+        except Exception as e:
+            _LOGGER.debug("Plain login failed: %s", e)
+        return False
+
+    async def login(self) -> bool:
+        """Auto-detect login method."""
+        # Try hashed first
+        token = await self._fetch_token()
+        if token:
+            if await self._login_hashed(token):
+                _LOGGER.debug("ZTE login (hashed) succeeded")
+                return True
+        # Try plain
+        if await self._login_plain():
+            _LOGGER.debug("ZTE login (plain) succeeded")
+            return True
+        _LOGGER.warning("ZTE login failed using both methods")
         return False
 
     async def test_and_login(self) -> bool:
@@ -66,13 +116,17 @@ class ZteApi:
                             if isinstance(chunk, dict):
                                 data.update(chunk)
                         except Exception:
+                            # Non-JSON or empty
                             pass
             except Exception as e:
                 _LOGGER.debug("Fetch error from %s: %s", url, e)
+
+        # Retry once if all empty
         if not any(v not in ("", None) for v in data.values()):
             await self.login()
             return await self.fetch_all()
         return data
+
 
 class ZteCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, api: ZteApi, autodiscovery: bool = False, update_interval: int = 30):
