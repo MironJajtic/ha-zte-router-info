@@ -9,11 +9,10 @@ from .coordinator import ZteApi, ZteCoordinator
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ip = entry.data["ip_address"]
     password = entry.data["password"]
-    username = entry.data.get("username", "admin")  # Default to "admin"
     autodiscovery = entry.data.get("autodiscovery", False)
     update_interval = entry.data.get("update_interval", 30)
 
-    api = ZteApi(ip, password, username)
+    api = ZteApi(ip, password)
     coordinator = ZteCoordinator(
         hass, api, autodiscovery=autodiscovery, update_interval=update_interval)
     await coordinator.async_config_entry_first_refresh()

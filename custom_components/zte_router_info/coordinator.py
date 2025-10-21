@@ -6,6 +6,7 @@ import async_timeout
 import hashlib
 import json
 import asyncio
+import time
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -34,224 +35,204 @@ STATUS_QUERIES = [
 
 
 class ZteApi:
-    def __init__(self, host: str, password: str, username: str = "admin"):
+    def __init__(self, host: str, password: str):
         self._host = host
         self._password = password
-        self._username = username
-        self._session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar())
+        # Create session with persistent cookie jar - this is critical!
+        self._session = aiohttp.ClientSession(
+            # unsafe=True to allow cookies for IP addresses
+            cookie_jar=aiohttp.CookieJar(unsafe=True)
+        )
         self._base_get = f"http://{host}/goform/goform_get_cmd_process"
         self._base_set = f"http://{host}/goform/goform_set_cmd_process"
         self._root_url = f"http://{host}/"
         self._logged_in = False
-        self._ld_token = ""
 
     async def async_close(self):
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _initial_visit(self):
-        """Visit root page to get initial cookies"""
-        try:
-            _LOGGER.debug("Initial visit to %s", self._root_url)
-            async with async_timeout.timeout(10):
-                async with self._session.get(self._root_url) as resp:
-                    await resp.text()
-                    _LOGGER.debug("Initial visit: status=%s", resp.status)
-                    return resp.status == 200
-        except Exception as e:
-            _LOGGER.error("Initial visit failed: %s", e)
-            return False
+    async def _get_ld_with_timestamp(self) -> str:
+        """Fetch LD token with timestamp like browser does"""
+        timestamp = int(time.time() * 1000)  # Unix timestamp in milliseconds
+        url = f"{self._base_get}?isTest=false&cmd=LD&_={timestamp}"
 
-    async def _get_ld(self) -> str:
-        """Fetch LD token"""
-        url = f"{self._base_get}?isTest=false&cmd=LD"
-        try:
-            async with async_timeout.timeout(10):
-                async with self._session.get(url) as resp:
-                    text = await resp.text()
-                    _LOGGER.debug(
-                        "LD fetch: status=%s, response='%s'", resp.status, text)
-
-                    if resp.status != 200:
-                        return ""
-
-                    try:
-                        data = json.loads(text)
-                        ld = data.get("LD", "") or ""
-                        _LOGGER.debug("LD token: '%s'",
-                                      ld if ld else "<empty>")
-                        return str(ld).strip()
-                    except Exception:
-                        return ""
-        except Exception as e:
-            _LOGGER.debug("LD fetch failed: %s", e)
-            return ""
-
-    async def _post_login(self, payload: str, method_name: str) -> tuple[bool, str]:
-        """Post a login payload"""
         headers = {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Origin": self._root_url.rstrip("/"),
             "Referer": self._root_url,
             "X-Requested-With": "XMLHttpRequest",
         }
 
         try:
-            _LOGGER.debug("Attempting %s login", method_name)
-            _LOGGER.debug("Payload: %s", payload.replace(
-                self._password, "***"))
+            _LOGGER.debug("Fetching LD token from: %s", url)
+            async with async_timeout.timeout(10):
+                async with self._session.get(url, headers=headers) as resp:
+                    text = await resp.text()
+                    _LOGGER.debug(
+                        "LD response: status=%s, text='%s'", resp.status, text)
+
+                    # Check cookies after LD fetch
+                    cookies = self._session.cookie_jar.filter_cookies(
+                        self._root_url)
+                    _LOGGER.debug("Cookies after LD fetch: %s", dict(cookies))
+
+                    if resp.status != 200:
+                        _LOGGER.error(
+                            "LD fetch failed with status %s", resp.status)
+                        return ""
+
+                    try:
+                        data = json.loads(text)
+                        ld = data.get("LD", "")
+                        if ld:
+                            _LOGGER.info(
+                                "LD token retrieved successfully (length: %d)", len(ld))
+                        else:
+                            _LOGGER.warning("LD token is empty")
+                        return str(ld).strip()
+                    except Exception as e:
+                        _LOGGER.error("Failed to parse LD JSON: %s", e)
+                        return ""
+        except Exception as e:
+            _LOGGER.error("LD fetch exception: %s", e)
+            return ""
+
+    async def _login_with_ld(self, ld_token: str) -> bool:
+        """
+        Login using double-hash method with LD token.
+        Formula: SHA256(SHA256(password).upper() + LD).upper()
+        """
+        try:
+            # Step 1: SHA256(password).upper()
+            step1 = hashlib.sha256(self._password.encode()).hexdigest().upper()
+
+            # Step 2: SHA256(step1 + LD).upper()
+            combined = step1 + ld_token
+            final_hash = hashlib.sha256(combined.encode()).hexdigest().upper()
+
+            _LOGGER.debug("Login hash: SHA256(password)=%s..., LD_len=%d, final=%s...",
+                          step1[:16], len(ld_token), final_hash[:16])
+
+            # Prepare payload - NO USERNAME, only password
+            payload = f"isTest=false&goformId=LOGIN&password={final_hash}"
+
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Referer": self._root_url,
+                "Origin": self._root_url.rstrip("/"),
+                "X-Requested-With": "XMLHttpRequest",
+            }
+
+            _LOGGER.debug("Posting login to: %s", self._base_set)
+            _LOGGER.debug("Login payload: %s", payload)
+
+            # Check cookies before login
+            cookies = self._session.cookie_jar.filter_cookies(self._root_url)
+            _LOGGER.debug("Cookies before login POST: %s", dict(cookies))
 
             async with async_timeout.timeout(15):
                 async with self._session.post(self._base_set, data=payload, headers=headers) as resp:
                     text = await resp.text()
-                    _LOGGER.debug("%s response: status=%s, text='%s'",
-                                  method_name, resp.status, text)
+                    _LOGGER.debug(
+                        "Login response: status=%s, text='%s'", resp.status, text)
+
+                    # Check cookies after login
+                    cookies_after = self._session.cookie_jar.filter_cookies(
+                        self._root_url)
+                    _LOGGER.debug("Cookies after login: %s",
+                                  dict(cookies_after))
 
                     if resp.status != 200:
-                        return False, text
+                        _LOGGER.error(
+                            "Login failed with HTTP status %s", resp.status)
+                        return False
 
-                    # Parse JSON response
                     try:
-                        json_data = json.loads(text)
-                        result = json_data.get("result")
+                        data = json.loads(text)
+                        result = data.get("result")
 
-                        if result is not None:
-                            if str(result) == "0" or result == 0:
-                                _LOGGER.info("%s login SUCCESS", method_name)
-                                return True, text
-                            else:
-                                _LOGGER.debug(
-                                    "%s login FAILED, result=%s", method_name, result)
-                                return False, text
-
-                        # Empty dict might mean success
-                        if not json_data or json_data == {}:
-                            _LOGGER.info(
-                                "%s login SUCCESS (empty response)", method_name)
-                            return True, text
-
+                        if result == "0" or result == 0:
+                            _LOGGER.info("✓ Login successful!")
+                            return True
+                        else:
+                            _LOGGER.error(
+                                "Login failed with result='%s'", result)
+                            return False
                     except json.JSONDecodeError:
-                        pass
-
-                    # Check text-based success indicators
-                    text_lower = text.lower()
-                    success_indicators = ['"result":"0"',
-                                          '"result":0', 'success', 'ok']
-                    for indicator in success_indicators:
-                        if indicator in text_lower:
-                            _LOGGER.info(
-                                "%s login SUCCESS (text indicator)", method_name)
-                            return True, text
-
-                    # Very short/empty response might be success
-                    if len(text.strip()) < 5:
-                        _LOGGER.info("%s login SUCCESS (empty)", method_name)
-                        return True, text
-
-                    return False, text
+                        _LOGGER.error(
+                            "Login response is not valid JSON: %s", text)
+                        return False
 
         except Exception as e:
-            _LOGGER.error("%s login exception: %s", method_name, e)
-            return False, str(e)
-
-    async def _login_adaptive(self) -> bool:
-        """Try multiple login methods with username"""
-        _LOGGER.debug(
-            "Starting login process for host=%s, username=%s", self._host, self._username)
-
-        self._logged_in = False
-        self._ld_token = ""
-
-        # Step 1: Initial visit
-        if not await self._initial_visit():
-            _LOGGER.error("Initial visit failed")
+            _LOGGER.error("Login exception: %s", e)
             return False
 
-        await asyncio.sleep(0.5)
-
-        # Step 2: Get LD token
-        self._ld_token = await self._get_ld()
-        await asyncio.sleep(0.3)
-
-        # Step 3: Double-hash with LD + username
-        try:
-            step1 = hashlib.sha256(self._password.encode()).hexdigest().upper()
-            send_hash = hashlib.sha256(
-                (step1 + self._ld_token).encode()).hexdigest().upper()
-
-            _LOGGER.debug("Trying double-hash with username")
-            payload = f"isTest=false&goformId=LOGIN&username={self._username}&password={send_hash}"
-            ok, _ = await self._post_login(payload, "DOUBLE-HASH+USERNAME")
-            if ok:
-                self._logged_in = True
-                return True
-        except Exception as e:
-            _LOGGER.debug("Double-hash with username failed: %s", e)
-
-        # Step 4: Single hash + username
-        try:
-            single_hash = hashlib.sha256(
-                self._password.encode()).hexdigest().upper()
-            _LOGGER.debug("Trying single-hash with username")
-
-            payload = f"isTest=false&goformId=LOGIN&username={self._username}&password={single_hash}"
-            ok, _ = await self._post_login(payload, "SINGLE-HASH+USERNAME")
-            if ok:
-                self._logged_in = True
-                return True
-        except Exception as e:
-            _LOGGER.debug("Single-hash with username failed: %s", e)
-
-        # Step 5: Plain password + username
-        try:
-            _LOGGER.debug("Trying plain password with username")
-            payload = f"isTest=false&goformId=LOGIN&username={self._username}&password={self._password}"
-            ok, _ = await self._post_login(payload, "PLAIN+USERNAME")
-            if ok:
-                self._logged_in = True
-                return True
-        except Exception as e:
-            _LOGGER.debug("Plain with username failed: %s", e)
-
-        # Step 6: Try without username (backwards compatibility)
-        try:
-            single_hash = hashlib.sha256(
-                self._password.encode()).hexdigest().upper()
-            _LOGGER.debug("Trying single-hash WITHOUT username (fallback)")
-
-            payload = f"isTest=false&goformId=LOGIN&password={single_hash}"
-            ok, _ = await self._post_login(payload, "SINGLE-HASH-NO-USER")
-            if ok:
-                self._logged_in = True
-                return True
-        except Exception as e:
-            _LOGGER.debug("Fallback without username failed: %s", e)
-
-        _LOGGER.error("All login methods failed")
-        return False
-
     async def test_and_login(self) -> bool:
-        """Test connection and login"""
+        """Test connection and perform login sequence"""
         try:
+            _LOGGER.debug("=== Starting login sequence ===")
+
+            # Step 1: Visit root page to get initial zsidn cookie
+            _LOGGER.debug("Step 1: Visiting root page to establish session")
             async with async_timeout.timeout(10):
                 async with self._session.get(self._root_url) as resp:
+                    await resp.text()  # Read response to ensure cookies are set
+                    _LOGGER.debug("Root page visit: status=%s", resp.status)
+
+                    # Check if we got the zsidn cookie
+                    cookies = self._session.cookie_jar.filter_cookies(
+                        self._root_url)
+                    cookie_dict = dict(cookies)
+                    _LOGGER.debug("Cookies after root visit: %s", cookie_dict)
+
                     if resp.status not in (200, 302, 303):
                         _LOGGER.error(
                             "Router not reachable, status=%s", resp.status)
                         return False
-        except Exception as e:
-            _LOGGER.error("Connection test failed: %s", e)
-            return False
 
-        return await self._login_adaptive()
+                    # Check if zsidn cookie was set
+                    if 'zsidn' not in cookie_dict:
+                        _LOGGER.warning(
+                            "zsidn cookie not set after root visit")
+
+            # Small delay to let cookies settle
+            await asyncio.sleep(0.5)
+
+            # Step 2: Get LD token (this also refreshes the zsidn cookie)
+            _LOGGER.debug("Step 2: Fetching LD token")
+            ld_token = await self._get_ld_with_timestamp()
+
+            if not ld_token:
+                _LOGGER.error("Failed to get LD token")
+                return False
+
+            # Small delay before login
+            await asyncio.sleep(0.3)
+
+            # Step 3: Login with LD token
+            _LOGGER.debug("Step 3: Attempting login")
+            success = await self._login_with_ld(ld_token)
+
+            if success:
+                self._logged_in = True
+                _LOGGER.info("Login sequence completed successfully")
+            else:
+                _LOGGER.error("Login sequence failed")
+
+            return success
+
+        except Exception as e:
+            _LOGGER.error("test_and_login exception: %s", e)
+            return False
 
     async def fetch_all(self) -> dict:
         """Fetch all status data"""
         if not self._logged_in:
-            ok = await self._login_adaptive()
+            _LOGGER.warning("Not logged in, attempting login")
+            ok = await self.test_and_login()
             if not ok:
-                _LOGGER.error("Not logged in, cannot fetch data")
+                _LOGGER.error("Login failed, cannot fetch data")
                 return {}
 
         merged: dict = {}
@@ -261,15 +242,15 @@ class ZteApi:
                 async with async_timeout.timeout(15):
                     async with self._session.get(url) as resp:
                         if resp.status != 200:
-                            _LOGGER.debug("Query %d/%d: status %s",
+                            _LOGGER.debug("Query %d/%d: HTTP %s",
                                           i, len(STATUS_QUERIES), resp.status)
                             continue
                         try:
                             chunk = await resp.json(content_type=None)
                             if isinstance(chunk, dict):
                                 merged.update(chunk)
-                                _LOGGER.debug(
-                                    "Query %d/%d: got %d fields", i, len(STATUS_QUERIES), len(chunk))
+                                _LOGGER.debug("Query %d/%d: received %d fields",
+                                              i, len(STATUS_QUERIES), len(chunk))
                         except Exception:
                             text = await resp.text()
                             _LOGGER.debug("Query %d/%d non-JSON: %s",
@@ -278,14 +259,17 @@ class ZteApi:
                 _LOGGER.debug("Query %d/%d error: %s",
                               i, len(STATUS_QUERIES), e)
 
-        # Retry if data is empty
-        if not any(v not in ("", None, []) for v in merged.values()):
-            _LOGGER.warning("Data appears empty, retrying login")
+        # Check if data is valid
+        valid_values = [v for v in merged.values() if v not in ("", None, [])]
+        if not valid_values:
+            _LOGGER.warning(
+                "Received empty data, session may have expired - retrying login")
             self._logged_in = False
-            if await self._login_adaptive():
+            if await self.test_and_login():
+                # Try fetching again after re-login
                 return await self.fetch_all()
 
-        _LOGGER.info("Fetched %d data points", len(merged))
+        _LOGGER.info("Successfully fetched %d data points", len(merged))
         return merged
 
 

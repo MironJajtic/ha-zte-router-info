@@ -3,10 +3,9 @@
     "step": {
       "user": {
         "title": "Connect to ZTE Router",
-        "description": "Enter router IP, username and admin password. Enable autodiscovery to include all metrics.",
+        "description": "Enter router IP and admin password. Enable autodiscovery to include all metrics.",
         "data": {
           "ip_address": "Router IP address",
-          "username": "Admin username",
           "password": "Admin password",
           "autodiscovery": "Enable autodiscovery of all metrics",
           "update_interval": "Update interval (seconds)"
