@@ -25,12 +25,15 @@ PRIMARY_CMD = (
 )
 
 STATUS_QUERIES = [
-    PRIMARY_CMD,
-    "isTest=false&cmd=modem_main_state,signalbar,network_provider_fullname,lan_ipaddr,"
-    "realtime_tx_thrpt,realtime_rx_thrpt,monthly_rx_bytes,monthly_tx_bytes,cr_version,"
-    "wifi_chip1_ssid1_ssid&multi_data=1",
+    # Try simple individual queries first
+    "isTest=false&cmd=network_type",
+    "isTest=false&cmd=rssi",
+    "isTest=false&cmd=signalbar",
+    "isTest=false&cmd=lan_ipaddr",
     "isTest=false&cmd=wan_ipaddr",
-    "isTest=false&cmd=sms_capacity_info",
+    "isTest=false&cmd=cr_version",
+    "isTest=false&cmd=realtime_tx_thrpt",
+    "isTest=false&cmd=realtime_rx_thrpt",
 ]
 
 
@@ -217,6 +220,30 @@ class ZteApi:
             if success:
                 self._logged_in = True
                 _LOGGER.info("Login sequence completed successfully")
+
+                # Step 4: Wait a bit after login for session to fully establish
+                await asyncio.sleep(0.5)
+
+                # Verify cookies are still present
+                cookies = self._session.cookie_jar.filter_cookies(
+                    self._root_url)
+                _LOGGER.debug("Cookies after login: %s", dict(cookies))
+
+                # Step 5: Test a simple query to verify data access
+                test_url = f"{self._base_get}?isTest=false&cmd=rssi"
+                headers = {
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Referer": self._root_url,
+                    "X-Requested-With": "XMLHttpRequest",
+                }
+                try:
+                    async with async_timeout.timeout(10):
+                        async with self._session.get(test_url, headers=headers) as resp:
+                            test_data = await resp.text()
+                            _LOGGER.warning(
+                                "Post-login test query response: %s", test_data)
+                except Exception as e:
+                    _LOGGER.warning("Post-login test query failed: %s", e)
             else:
                 _LOGGER.error("Login sequence failed")
 
@@ -236,11 +263,19 @@ class ZteApi:
                 return {}
 
         merged: dict = {}
+
+        # Add proper headers like browser
+        headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": self._root_url,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
         for i, q in enumerate(STATUS_QUERIES, 1):
             url = f"{self._base_get}?{q}"
             try:
                 async with async_timeout.timeout(15):
-                    async with self._session.get(url) as resp:
+                    async with self._session.get(url, headers=headers) as resp:
                         if resp.status != 200:
                             _LOGGER.warning(
                                 "Query %d/%d: HTTP %s", i, len(STATUS_QUERIES), resp.status)
