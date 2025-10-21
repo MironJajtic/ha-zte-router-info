@@ -226,7 +226,7 @@ class ZteApi:
             _LOGGER.error("test_and_login exception: %s", e)
             return False
 
-    async def fetch_all(self) -> dict:
+    async def fetch_all(self, retry_count: int = 0) -> dict:
         """Fetch all status data"""
         if not self._logged_in:
             _LOGGER.warning("Not logged in, attempting login")
@@ -242,32 +242,45 @@ class ZteApi:
                 async with async_timeout.timeout(15):
                     async with self._session.get(url) as resp:
                         if resp.status != 200:
-                            _LOGGER.debug("Query %d/%d: HTTP %s",
-                                          i, len(STATUS_QUERIES), resp.status)
+                            _LOGGER.warning(
+                                "Query %d/%d: HTTP %s", i, len(STATUS_QUERIES), resp.status)
                             continue
+
+                        text = await resp.text()
+                        _LOGGER.warning(
+                            "Query %d/%d raw response: %s", i, len(STATUS_QUERIES), text[:500])
+
                         try:
-                            chunk = await resp.json(content_type=None)
+                            chunk = json.loads(text)
                             if isinstance(chunk, dict):
+                                _LOGGER.warning("Query %d/%d: parsed %d fields: %s",
+                                                i, len(STATUS_QUERIES), len(
+                                                    chunk),
+                                                list(chunk.keys())[:20])
                                 merged.update(chunk)
-                                _LOGGER.debug("Query %d/%d: received %d fields",
-                                              i, len(STATUS_QUERIES), len(chunk))
-                        except Exception:
-                            text = await resp.text()
-                            _LOGGER.debug("Query %d/%d non-JSON: %s",
-                                          i, len(STATUS_QUERIES), text[:100])
+                        except Exception as e:
+                            _LOGGER.error("Query %d/%d JSON parse failed: %s",
+                                          i, len(STATUS_QUERIES), e)
             except Exception as e:
-                _LOGGER.debug("Query %d/%d error: %s",
+                _LOGGER.error("Query %d/%d error: %s",
                               i, len(STATUS_QUERIES), e)
 
         # Check if data is valid
         valid_values = [v for v in merged.values() if v not in ("", None, [])]
-        if not valid_values:
+        if not valid_values and retry_count < 1:
             _LOGGER.warning(
-                "Received empty data, session may have expired - retrying login")
+                "Received empty data, session may have expired - retrying login once")
             self._logged_in = False
             if await self.test_and_login():
-                # Try fetching again after re-login
-                return await self.fetch_all()
+                # Try fetching again after re-login, but only once
+                return await self.fetch_all(retry_count=retry_count + 1)
+            else:
+                _LOGGER.error("Re-login failed, returning empty data")
+                return {}
+        elif not valid_values:
+            _LOGGER.error(
+                "Still receiving empty data after retry - check router compatibility")
+            return merged
 
         _LOGGER.info("Successfully fetched %d data points", len(merged))
         return merged
