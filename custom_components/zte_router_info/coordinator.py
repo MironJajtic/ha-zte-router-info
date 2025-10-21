@@ -34,13 +34,11 @@ STATUS_QUERIES = [
 
 
 class ZteApi:
-    def __init__(self, host: str, password: str):
+    def __init__(self, host: str, password: str, username: str = "admin"):
         self._host = host
         self._password = password
-        # Create session without custom timeout first
-        self._session = aiohttp.ClientSession(
-            cookie_jar=aiohttp.CookieJar()
-        )
+        self._username = username
+        self._session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar())
         self._base_get = f"http://{host}/goform/goform_get_cmd_process"
         self._base_set = f"http://{host}/goform/goform_set_cmd_process"
         self._root_url = f"http://{host}/"
@@ -54,29 +52,24 @@ class ZteApi:
     async def _initial_visit(self):
         """Visit root page to get initial cookies"""
         try:
-            _LOGGER.warning(
-                "=== STEP 1: Initial visit to %s ===", self._root_url)
+            _LOGGER.debug("Initial visit to %s", self._root_url)
             async with async_timeout.timeout(10):
                 async with self._session.get(self._root_url) as resp:
-                    text = await resp.text()
-                    cookies = self._session.cookie_jar.filter_cookies(
-                        self._root_url)
-                    _LOGGER.warning("Initial visit: status=%s, cookies=%s, content_length=%d",
-                                    resp.status, dict(cookies), len(text))
+                    await resp.text()
+                    _LOGGER.debug("Initial visit: status=%s", resp.status)
                     return resp.status == 200
         except Exception as e:
-            _LOGGER.error("Initial visit FAILED: %s", e, exc_info=True)
+            _LOGGER.error("Initial visit failed: %s", e)
             return False
 
     async def _get_ld(self) -> str:
         """Fetch LD token"""
         url = f"{self._base_get}?isTest=false&cmd=LD"
         try:
-            _LOGGER.warning("=== STEP 2: Fetching LD token from %s ===", url)
             async with async_timeout.timeout(10):
                 async with self._session.get(url) as resp:
                     text = await resp.text()
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "LD fetch: status=%s, response='%s'", resp.status, text)
 
                     if resp.status != 200:
@@ -85,15 +78,13 @@ class ZteApi:
                     try:
                         data = json.loads(text)
                         ld = data.get("LD", "") or ""
-                        _LOGGER.warning(
-                            "LD token parsed: '%s' (length: %d)", ld, len(ld))
+                        _LOGGER.debug("LD token: '%s'",
+                                      ld if ld else "<empty>")
                         return str(ld).strip()
-                    except Exception as e:
-                        _LOGGER.warning(
-                            "LD JSON parse failed: %s, treating as empty", e)
+                    except Exception:
                         return ""
         except Exception as e:
-            _LOGGER.error("LD fetch FAILED: %s", e, exc_info=True)
+            _LOGGER.debug("LD fetch failed: %s", e)
             return ""
 
     async def _post_login(self, payload: str, method_name: str) -> tuple[bool, str]:
@@ -107,172 +98,150 @@ class ZteApi:
         }
 
         try:
-            _LOGGER.warning("=== Attempting %s login ===", method_name)
-            _LOGGER.warning("POST URL: %s", self._base_set)
-            _LOGGER.warning("Payload: %s", payload)
-            _LOGGER.warning("Headers: %s", headers)
+            _LOGGER.debug("Attempting %s login", method_name)
+            _LOGGER.debug("Payload: %s", payload.replace(
+                self._password, "***"))
 
             async with async_timeout.timeout(15):
                 async with self._session.post(self._base_set, data=payload, headers=headers) as resp:
                     text = await resp.text()
-                    _LOGGER.warning("%s login response: status=%s, text='%s'",
-                                    method_name, resp.status, text)
+                    _LOGGER.debug("%s response: status=%s, text='%s'",
+                                  method_name, resp.status, text)
 
                     if resp.status != 200:
-                        _LOGGER.warning(
-                            "%s login: HTTP status not 200", method_name)
                         return False, text
 
-                    # Try JSON parse
+                    # Parse JSON response
                     try:
                         json_data = json.loads(text)
-                        _LOGGER.warning(
-                            "%s login: parsed JSON = %s", method_name, json_data)
-
                         result = json_data.get("result")
+
                         if result is not None:
-                            _LOGGER.warning("%s login: result field = %s (type: %s)",
-                                            method_name, result, type(result))
                             if str(result) == "0" or result == 0:
-                                _LOGGER.warning(
-                                    "%s login: SUCCESS via result=0", method_name)
+                                _LOGGER.info("%s login SUCCESS", method_name)
                                 return True, text
                             else:
-                                _LOGGER.warning(
-                                    "%s login: FAILED, result=%s", method_name, result)
+                                _LOGGER.debug(
+                                    "%s login FAILED, result=%s", method_name, result)
                                 return False, text
 
                         # Empty dict might mean success
                         if not json_data or json_data == {}:
-                            _LOGGER.warning(
-                                "%s login: SUCCESS via empty JSON", method_name)
+                            _LOGGER.info(
+                                "%s login SUCCESS (empty response)", method_name)
                             return True, text
 
-                    except json.JSONDecodeError as e:
-                        _LOGGER.warning(
-                            "%s login: Not JSON - %s", method_name, e)
+                    except json.JSONDecodeError:
+                        pass
 
-                    # Check text-based indicators
+                    # Check text-based success indicators
                     text_lower = text.lower()
-                    success_indicators = [
-                        '"result":"0"', '"result":0', 'success', '"success"', 'ok', '"ok"']
+                    success_indicators = ['"result":"0"',
+                                          '"result":0', 'success', 'ok']
                     for indicator in success_indicators:
                         if indicator in text_lower:
-                            _LOGGER.warning("%s login: SUCCESS via text indicator '%s'",
-                                            method_name, indicator)
+                            _LOGGER.info(
+                                "%s login SUCCESS (text indicator)", method_name)
                             return True, text
 
-                    # Empty/very short response
+                    # Very short/empty response might be success
                     if len(text.strip()) < 5:
-                        _LOGGER.warning(
-                            "%s login: SUCCESS via empty response", method_name)
+                        _LOGGER.info("%s login SUCCESS (empty)", method_name)
                         return True, text
 
-                    _LOGGER.warning(
-                        "%s login: FAILED - no success indicator found", method_name)
                     return False, text
 
         except Exception as e:
-            _LOGGER.error("%s login EXCEPTION: %s",
-                          method_name, e, exc_info=True)
+            _LOGGER.error("%s login exception: %s", method_name, e)
             return False, str(e)
 
     async def _login_adaptive(self) -> bool:
-        """Try multiple login methods"""
-        _LOGGER.warning("========================================")
-        _LOGGER.warning("=== STARTING LOGIN PROCESS ===")
-        _LOGGER.warning("Host: %s", self._host)
-        _LOGGER.warning("Password length: %d", len(self._password))
-        _LOGGER.warning("========================================")
+        """Try multiple login methods with username"""
+        _LOGGER.debug(
+            "Starting login process for host=%s, username=%s", self._host, self._username)
 
         self._logged_in = False
         self._ld_token = ""
 
         # Step 1: Initial visit
         if not await self._initial_visit():
-            _LOGGER.error("Initial visit failed, aborting login")
+            _LOGGER.error("Initial visit failed")
             return False
 
         await asyncio.sleep(0.5)
 
-        # Step 2: Get LD
+        # Step 2: Get LD token
         self._ld_token = await self._get_ld()
-
         await asyncio.sleep(0.3)
 
-        # Step 3: Try double-hash with LD
+        # Step 3: Double-hash with LD + username
         try:
             step1 = hashlib.sha256(self._password.encode()).hexdigest().upper()
             send_hash = hashlib.sha256(
                 (step1 + self._ld_token).encode()).hexdigest().upper()
 
-            _LOGGER.warning("=== STEP 3: Double-hash method ===")
-            _LOGGER.warning("SHA256(password) = %s...", step1[:20])
-            _LOGGER.warning("LD token = '%s'",
-                            self._ld_token if self._ld_token else "<empty>")
-            _LOGGER.warning("SHA256(hash+LD) = %s...", send_hash[:20])
-
-            payload = f"isTest=false&goformId=LOGIN&password={send_hash}"
-            ok, resp = await self._post_login(payload, "DOUBLE-HASH")
+            _LOGGER.debug("Trying double-hash with username")
+            payload = f"isTest=false&goformId=LOGIN&username={self._username}&password={send_hash}"
+            ok, _ = await self._post_login(payload, "DOUBLE-HASH+USERNAME")
             if ok:
                 self._logged_in = True
-                _LOGGER.warning(
-                    "✓✓✓ LOGIN SUCCESSFUL - DOUBLE-HASH METHOD ✓✓✓")
                 return True
         except Exception as e:
-            _LOGGER.error("Double-hash failed: %s", e, exc_info=True)
+            _LOGGER.debug("Double-hash with username failed: %s", e)
 
-        # Step 4: Single hash
+        # Step 4: Single hash + username
         try:
             single_hash = hashlib.sha256(
                 self._password.encode()).hexdigest().upper()
-            _LOGGER.warning("=== STEP 4: Single-hash method ===")
-            _LOGGER.warning("SHA256(password) = %s...", single_hash[:20])
+            _LOGGER.debug("Trying single-hash with username")
+
+            payload = f"isTest=false&goformId=LOGIN&username={self._username}&password={single_hash}"
+            ok, _ = await self._post_login(payload, "SINGLE-HASH+USERNAME")
+            if ok:
+                self._logged_in = True
+                return True
+        except Exception as e:
+            _LOGGER.debug("Single-hash with username failed: %s", e)
+
+        # Step 5: Plain password + username
+        try:
+            _LOGGER.debug("Trying plain password with username")
+            payload = f"isTest=false&goformId=LOGIN&username={self._username}&password={self._password}"
+            ok, _ = await self._post_login(payload, "PLAIN+USERNAME")
+            if ok:
+                self._logged_in = True
+                return True
+        except Exception as e:
+            _LOGGER.debug("Plain with username failed: %s", e)
+
+        # Step 6: Try without username (backwards compatibility)
+        try:
+            single_hash = hashlib.sha256(
+                self._password.encode()).hexdigest().upper()
+            _LOGGER.debug("Trying single-hash WITHOUT username (fallback)")
 
             payload = f"isTest=false&goformId=LOGIN&password={single_hash}"
-            ok, resp = await self._post_login(payload, "SINGLE-HASH")
+            ok, _ = await self._post_login(payload, "SINGLE-HASH-NO-USER")
             if ok:
                 self._logged_in = True
-                _LOGGER.warning(
-                    "✓✓✓ LOGIN SUCCESSFUL - SINGLE-HASH METHOD ✓✓✓")
                 return True
         except Exception as e:
-            _LOGGER.error("Single-hash failed: %s", e, exc_info=True)
+            _LOGGER.debug("Fallback without username failed: %s", e)
 
-        # Step 5: Plain password
-        try:
-            _LOGGER.warning("=== STEP 5: Plain password method ===")
-            _LOGGER.warning("Using plain password: %s",
-                            "*" * len(self._password))
-
-            payload = f"isTest=false&goformId=LOGIN&password={self._password}"
-            ok, resp = await self._post_login(payload, "PLAIN")
-            if ok:
-                self._logged_in = True
-                _LOGGER.warning(
-                    "✓✓✓ LOGIN SUCCESSFUL - PLAIN PASSWORD METHOD ✓✓✓")
-                return True
-        except Exception as e:
-            _LOGGER.error("Plain password failed: %s", e, exc_info=True)
-
-        _LOGGER.error("========================================")
-        _LOGGER.error("=== ALL LOGIN METHODS FAILED ===")
-        _LOGGER.error("========================================")
+        _LOGGER.error("All login methods failed")
         return False
 
     async def test_and_login(self) -> bool:
         """Test connection and login"""
         try:
-            _LOGGER.warning("=== TESTING CONNECTION TO %s ===", self._root_url)
             async with async_timeout.timeout(10):
                 async with self._session.get(self._root_url) as resp:
-                    _LOGGER.warning("Connection test: status=%s", resp.status)
                     if resp.status not in (200, 302, 303):
                         _LOGGER.error(
-                            "Router not reachable, unexpected status=%s", resp.status)
+                            "Router not reachable, status=%s", resp.status)
                         return False
         except Exception as e:
-            _LOGGER.error("Connection test FAILED: %s", e, exc_info=True)
+            _LOGGER.error("Connection test failed: %s", e)
             return False
 
         return await self._login_adaptive()
@@ -280,10 +249,9 @@ class ZteApi:
     async def fetch_all(self) -> dict:
         """Fetch all status data"""
         if not self._logged_in:
-            _LOGGER.warning("Not logged in, attempting login before fetch")
             ok = await self._login_adaptive()
             if not ok:
-                _LOGGER.error("Login failed, returning empty data")
+                _LOGGER.error("Not logged in, cannot fetch data")
                 return {}
 
         merged: dict = {}
@@ -293,30 +261,31 @@ class ZteApi:
                 async with async_timeout.timeout(15):
                     async with self._session.get(url) as resp:
                         if resp.status != 200:
-                            _LOGGER.warning("Query %d/%d returned status %s",
-                                            i, len(STATUS_QUERIES), resp.status)
+                            _LOGGER.debug("Query %d/%d: status %s",
+                                          i, len(STATUS_QUERIES), resp.status)
                             continue
                         try:
                             chunk = await resp.json(content_type=None)
                             if isinstance(chunk, dict):
                                 merged.update(chunk)
-                                _LOGGER.debug("Query %d/%d: got %d fields",
-                                              i, len(STATUS_QUERIES), len(chunk))
-                        except Exception as e:
+                                _LOGGER.debug(
+                                    "Query %d/%d: got %d fields", i, len(STATUS_QUERIES), len(chunk))
+                        except Exception:
                             text = await resp.text()
-                            _LOGGER.warning(
-                                "Query %d/%d non-JSON: %s", i, len(STATUS_QUERIES), text[:200])
+                            _LOGGER.debug("Query %d/%d non-JSON: %s",
+                                          i, len(STATUS_QUERIES), text[:100])
             except Exception as e:
-                _LOGGER.warning("Query %d/%d error: %s",
-                                i, len(STATUS_QUERIES), e)
+                _LOGGER.debug("Query %d/%d error: %s",
+                              i, len(STATUS_QUERIES), e)
 
+        # Retry if data is empty
         if not any(v not in ("", None, []) for v in merged.values()):
-            _LOGGER.warning("Data appears empty, attempting re-login")
+            _LOGGER.warning("Data appears empty, retrying login")
             self._logged_in = False
             if await self._login_adaptive():
                 return await self.fetch_all()
 
-        _LOGGER.info("Fetched %d total data points", len(merged))
+        _LOGGER.info("Fetched %d data points", len(merged))
         return merged
 
 
@@ -338,5 +307,5 @@ class ZteCoordinator(DataUpdateCoordinator):
                 _LOGGER.warning("No data received from router")
             return data
         except Exception as err:
-            _LOGGER.error("Update failed: %s", err, exc_info=True)
+            _LOGGER.error("Update failed: %s", err)
             raise UpdateFailed(f"Update failed: {err}") from err

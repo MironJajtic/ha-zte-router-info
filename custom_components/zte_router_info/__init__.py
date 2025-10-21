@@ -5,14 +5,17 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN, PLATFORMS
 from .coordinator import ZteApi, ZteCoordinator
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ip = entry.data["ip_address"]
     password = entry.data["password"]
+    username = entry.data.get("username", "admin")  # Default to "admin"
     autodiscovery = entry.data.get("autodiscovery", False)
     update_interval = entry.data.get("update_interval", 30)
 
-    api = ZteApi(ip, password)
-    coordinator = ZteCoordinator(hass, api, autodiscovery=autodiscovery, update_interval=update_interval)
+    api = ZteApi(ip, password, username)
+    coordinator = ZteCoordinator(
+        hass, api, autodiscovery=autodiscovery, update_interval=update_interval)
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})
@@ -20,6 +23,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

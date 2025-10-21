@@ -4,6 +4,7 @@ from homeassistant import config_entries
 from .const import DOMAIN
 from .coordinator import ZteApi
 
+
 class ZteRouterInfoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
@@ -12,6 +13,7 @@ class ZteRouterInfoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             ip = user_input["ip_address"]
             password = user_input["password"]
+            username = user_input.get("username", "admin")
             autodiscovery = user_input.get("autodiscovery", False)
             update_interval = user_input.get("update_interval", 30)
 
@@ -26,7 +28,7 @@ class ZteRouterInfoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(ip)
             self._abort_if_unique_id_configured()
 
-            api = ZteApi(ip, password)
+            api = ZteApi(ip, password, username)
             ok = await api.test_and_login()
             await api.async_close()
 
@@ -36,6 +38,7 @@ class ZteRouterInfoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={
                         "ip_address": ip,
                         "password": password,
+                        "username": username,
                         "autodiscovery": autodiscovery,
                         "update_interval": update_interval,
                     },
@@ -44,6 +47,7 @@ class ZteRouterInfoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema({
             vol.Required("ip_address", default="192.168.8.1"): str,
+            vol.Required("username", default="admin"): str,
             vol.Required("password"): str,
             vol.Optional("autodiscovery", default=False): bool,
             vol.Optional("update_interval", default=30): int,
