@@ -25,15 +25,38 @@ PRIMARY_CMD = (
 )
 
 STATUS_QUERIES = [
-    # Try simple individual queries first
+    # Basic info
     "isTest=false&cmd=network_type",
     "isTest=false&cmd=rssi",
+    "isTest=false&cmd=rscp",
+    "isTest=false&cmd=lte_rsrp",
+    "isTest=false&cmd=sinr",
     "isTest=false&cmd=signalbar",
+    "isTest=false&cmd=cell_id",
+    "isTest=false&cmd=network_provider_fullname",
+
+    # Network info
     "isTest=false&cmd=lan_ipaddr",
     "isTest=false&cmd=wan_ipaddr",
-    "isTest=false&cmd=cr_version",
+    "isTest=false&cmd=modem_main_state",
+
+    # Bandwidth/throughput
     "isTest=false&cmd=realtime_tx_thrpt",
     "isTest=false&cmd=realtime_rx_thrpt",
+    "isTest=false&cmd=monthly_rx_bytes",
+    "isTest=false&cmd=monthly_tx_bytes",
+
+    # Device info
+    "isTest=false&cmd=cr_version",
+    "isTest=false&cmd=wifi_chip1_ssid1_ssid",
+
+    # LTE Advanced info
+    "isTest=false&cmd=wan_lte_ca",
+    "isTest=false&cmd=ZCELLINFO_band",
+    "isTest=false&cmd=lte_ca_pcell_band",
+    "isTest=false&cmd=lte_ca_scell_band",
+    "isTest=false&cmd=lte_ca_pcell_bandwidth",
+    "isTest=false&cmd=lte_ca_scell_bandwidth",
 ]
 
 
@@ -240,10 +263,10 @@ class ZteApi:
                     async with async_timeout.timeout(10):
                         async with self._session.get(test_url, headers=headers) as resp:
                             test_data = await resp.text()
-                            _LOGGER.warning(
+                            _LOGGER.debug(
                                 "Post-login test query response: %s", test_data)
                 except Exception as e:
-                    _LOGGER.warning("Post-login test query failed: %s", e)
+                    _LOGGER.debug("Post-login test query failed: %s", e)
             else:
                 _LOGGER.error("Login sequence failed")
 
@@ -282,19 +305,17 @@ class ZteApi:
                             continue
 
                         text = await resp.text()
-                        _LOGGER.warning(
-                            "Query %d/%d raw response: %s", i, len(STATUS_QUERIES), text[:500])
+                        _LOGGER.debug("Query %d/%d response: %s",
+                                      i, len(STATUS_QUERIES), text[:200])
 
                         try:
                             chunk = json.loads(text)
                             if isinstance(chunk, dict):
-                                _LOGGER.warning("Query %d/%d: parsed %d fields: %s",
-                                                i, len(STATUS_QUERIES), len(
-                                                    chunk),
-                                                list(chunk.keys())[:20])
+                                _LOGGER.debug("Query %d/%d: got %d fields",
+                                              i, len(STATUS_QUERIES), len(chunk))
                                 merged.update(chunk)
                         except Exception as e:
-                            _LOGGER.error("Query %d/%d JSON parse failed: %s",
+                            _LOGGER.debug("Query %d/%d JSON parse failed: %s",
                                           i, len(STATUS_QUERIES), e)
             except Exception as e:
                 _LOGGER.error("Query %d/%d error: %s",
@@ -322,7 +343,7 @@ class ZteApi:
 
 
 class ZteCoordinator(DataUpdateCoordinator):
-    def __init__(self, hass: HomeAssistant, api: ZteApi, autodiscovery: bool = False, update_interval: int = 30):
+    def __init__(self, hass: HomeAssistant, api: ZteApi, config_entry, autodiscovery: bool = False, update_interval: int = 30):
         super().__init__(
             hass,
             _LOGGER,
@@ -330,6 +351,7 @@ class ZteCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=update_interval),
         )
         self.api = api
+        self.config_entry = config_entry
         self.autodiscovery = autodiscovery
 
     async def _async_update_data(self):
