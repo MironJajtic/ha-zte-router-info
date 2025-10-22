@@ -59,8 +59,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
     coordinator: ZteCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities = []
 
+    # Only create sensors for fields that have actual data (not empty strings)
     for key, meta in SENSOR_KEYS.items():
-        if key in coordinator.data:
+        val = coordinator.data.get(key)
+        # Only add sensor if field exists and has a non-empty value
+        if key in coordinator.data and val not in (None, "", []):
             entities.append(ZteRouterInfoSensor(coordinator, key, meta))
 
     if coordinator.autodiscovery:
@@ -68,7 +71,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
         for key in coordinator.data.keys():
             if key in known or key in IGNORE_KEYS or key.startswith("_"):
                 continue
-            entities.append(ZteRouterDynamicSensor(coordinator, key))
+            val = coordinator.data.get(key)
+            # Only add dynamic sensor if it has a non-empty value
+            if val not in (None, "", []):
+                entities.append(ZteRouterDynamicSensor(coordinator, key))
 
     async_add_entities(entities, True)
 
@@ -107,22 +113,39 @@ class ZteRouterInfoSensor(CoordinatorEntity, SensorEntity):
     def native_value(self):
         val = self.coordinator.data.get(self._key)
 
+        # Return None for empty values instead of empty string
+        if val in (None, "", []):
+            return None
+
         # Fix RSSI sign (router returns positive, should be negative)
         if self._key == "rssi" and val not in (None, ""):
             try:
                 iv = int(val)
                 return -iv if iv > 0 else iv
             except Exception:
-                pass
+                return None
 
         # Convert throughput from bps to Mbps for better readability
-        if self._key in ("realtime_tx_thrpt", "realtime_rx_thrpt") and val not in (None, ""):
+        if self._key in ("realtime_tx_thrpt", "realtime_rx_thrpt"):
             try:
                 bps = int(val)
                 mbps = round(bps / 1_000_000, 2)
                 return mbps
             except Exception:
-                pass
+                return None
+
+        # For other numeric fields with units, try to convert to number
+        if self._attr_native_unit_of_measurement:
+            try:
+                # Try int first
+                return int(val)
+            except (ValueError, TypeError):
+                try:
+                    # Then try float
+                    return float(val)
+                except (ValueError, TypeError):
+                    # If conversion fails, return the string value
+                    return val
 
         return val
 
@@ -132,6 +155,15 @@ class ZteRouterInfoSensor(CoordinatorEntity, SensorEntity):
         if self._key in ("realtime_tx_thrpt", "realtime_rx_thrpt"):
             return "Mbps"
         return self._attr_native_unit_of_measurement
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        if not self.coordinator.last_update_success:
+            return False
+        val = self.coordinator.data.get(self._key)
+        # Mark as unavailable if value is empty
+        return val not in (None, "", [])
 
 
 class ZteRouterDynamicSensor(CoordinatorEntity, SensorEntity):
@@ -153,4 +185,28 @@ class ZteRouterDynamicSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return self.coordinator.data.get(self._key)
+        val = self.coordinator.data.get(self._key)
+
+        # Return None for empty values
+        if val in (None, "", []):
+            return None
+
+        # For numeric fields with units, try to convert to number
+        if self._attr_native_unit_of_measurement:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return val
+
+        return val
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        if not self.coordinator.last_update_success:
+            return False
+        val = self.coordinator.data.get(self._key)
+        return val not in (None, "", [])
