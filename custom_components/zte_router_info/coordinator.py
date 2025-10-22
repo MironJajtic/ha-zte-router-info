@@ -25,38 +25,26 @@ PRIMARY_CMD = (
 )
 
 STATUS_QUERIES = [
-    # Basic info
-    "isTest=false&cmd=network_type",
-    "isTest=false&cmd=rssi",
-    "isTest=false&cmd=rscp",
-    "isTest=false&cmd=lte_rsrp",
-    "isTest=false&cmd=sinr",
-    "isTest=false&cmd=signalbar",
-    "isTest=false&cmd=cell_id",
-    "isTest=false&cmd=network_provider_fullname",
+    # Main status query (similar to what web UI uses)
+    "isTest=false&cmd=modem_main_state,signalbar,network_type,network_provider_fullname,"
+    "ppp_status,simcard_roam,lan_ipaddr,wifi_onoff_state,wifi_chip1_ssid1_ssid,"
+    "realtime_tx_bytes,realtime_rx_bytes,realtime_time,realtime_tx_thrpt,realtime_rx_thrpt,"
+    "monthly_rx_bytes,monthly_tx_bytes,monthly_time,wan_lte_ca,sms_unread_num,"
+    "battery_charging,battery_vol_percent,battery_value,battery_pers,"
+    "wifi_chip1_ssid1_access_sta_num,wifi_chip2_ssid1_access_sta_num&multi_data=1",
 
-    # Network info
-    "isTest=false&cmd=lan_ipaddr",
-    "isTest=false&cmd=wan_ipaddr",
-    "isTest=false&cmd=modem_main_state",
-
-    # Bandwidth/throughput
-    "isTest=false&cmd=realtime_tx_thrpt",
-    "isTest=false&cmd=realtime_rx_thrpt",
-    "isTest=false&cmd=monthly_rx_bytes",
-    "isTest=false&cmd=monthly_tx_bytes",
+    # LTE signal details (with multi_data)
+    "isTest=false&cmd=network_type,rssi,rscp,lte_rsrp,ZCELLINFO_band,"
+    "lte_ca_pcell_arfcn,lte_ca_pcell_band,lte_ca_scell_band,"
+    "lte_ca_pcell_bandwidth,lte_ca_scell_info,lte_ca_scell_bandwidth,"
+    "wan_lte_ca,Z_PCI,cell_id,sinr,ecio,Z_dl_earfcn,"
+    "lte_ca_pcell_arfcn,lte_ca_scell_arfcn&multi_data=1",
 
     # Device info
-    "isTest=false&cmd=cr_version",
-    "isTest=false&cmd=wifi_chip1_ssid1_ssid",
+    "isTest=false&cmd=cr_version,wan_ipaddr&multi_data=1",
 
-    # LTE Advanced info
-    "isTest=false&cmd=wan_lte_ca",
-    "isTest=false&cmd=ZCELLINFO_band",
-    "isTest=false&cmd=lte_ca_pcell_band",
-    "isTest=false&cmd=lte_ca_scell_band",
-    "isTest=false&cmd=lte_ca_pcell_bandwidth",
-    "isTest=false&cmd=lte_ca_scell_bandwidth",
+    # SMS info
+    "isTest=false&cmd=sms_capacity_info",
 ]
 
 
