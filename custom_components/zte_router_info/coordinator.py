@@ -61,6 +61,7 @@ class ZteApi:
         self._base_set = f"http://{host}/goform/goform_set_cmd_process"
         self._root_url = f"http://{host}/"
         self._logged_in = False
+        self._login_time = 0  # Track when we last logged in
 
     async def async_close(self):
         if self._session and not self._session.closed:
@@ -230,6 +231,7 @@ class ZteApi:
 
             if success:
                 self._logged_in = True
+                self._login_time = time.time()  # Record login time
                 _LOGGER.info("Login sequence completed successfully")
 
                 # Step 4: Wait a bit after login for session to fully establish
@@ -266,6 +268,11 @@ class ZteApi:
 
     async def fetch_all(self, retry_count: int = 0) -> dict:
         """Fetch all status data"""
+        # Check if session might have expired (after 5 minutes, force re-login)
+        if self._logged_in and time.time() - self._login_time > 300:
+            _LOGGER.info("Session older than 5 minutes, forcing re-login")
+            self._logged_in = False
+
         if not self._logged_in:
             _LOGGER.warning("Not logged in, attempting login")
             ok = await self.test_and_login()
@@ -299,9 +306,12 @@ class ZteApi:
                         try:
                             chunk = json.loads(text)
                             if isinstance(chunk, dict):
-                                _LOGGER.debug("Query %d/%d: got %d fields",
-                                              i, len(STATUS_QUERIES), len(chunk))
-                                merged.update(chunk)
+                                # Filter out empty values to merge only actual data
+                                non_empty = {
+                                    k: v for k, v in chunk.items() if v not in ("", None, [])}
+                                merged.update(non_empty)
+                                _LOGGER.debug("Query %d/%d: got %d fields (%d non-empty)",
+                                              i, len(STATUS_QUERIES), len(chunk), len(non_empty))
                         except Exception as e:
                             _LOGGER.debug("Query %d/%d JSON parse failed: %s",
                                           i, len(STATUS_QUERIES), e)
@@ -321,10 +331,13 @@ class ZteApi:
             else:
                 _LOGGER.error("Re-login failed, returning empty data")
                 return {}
-        elif not valid_values:
-            _LOGGER.error(
-                "Still receiving empty data after retry - check router compatibility")
-            return merged
+        elif len(valid_values) < 10 and retry_count < 1:
+            # If we got very few fields, session might be dying
+            _LOGGER.warning(
+                "Got only %d valid fields (expected 40+), attempting re-login", len(valid_values))
+            self._logged_in = False
+            if await self.test_and_login():
+                return await self.fetch_all(retry_count=retry_count + 1)
 
         _LOGGER.info("Successfully fetched %d data points", len(merged))
         return merged

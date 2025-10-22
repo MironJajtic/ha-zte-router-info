@@ -229,7 +229,7 @@ class ZteRouterInfoSensor(CoordinatorEntity, SensorEntity):
     def native_unit_of_measurement(self):
         # Override units for converted values
         if self._key in ("realtime_tx_thrpt", "realtime_rx_thrpt"):
-            return "Mbps"
+            return "Mbit/s"  # Home Assistant standard unit
         if self._key in ("monthly_rx_bytes", "monthly_tx_bytes", "realtime_tx_bytes", "realtime_rx_bytes"):
             return "GB"
         if self._key in ("realtime_time", "monthly_time"):
@@ -239,11 +239,9 @@ class ZteRouterInfoSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if not self.coordinator.last_update_success:
-            return False
-        val = self.coordinator.data.get(self._key)
-        # Mark as unavailable if value is empty
-        return val not in (None, "", [])
+        # Entity is available if coordinator update was successful
+        # Don't check individual value - let it show None/unavailable state instead
+        return self.coordinator.last_update_success
 
 
 class ZteRouterDynamicSensor(CoordinatorEntity, SensorEntity):
@@ -286,7 +284,4 @@ class ZteRouterDynamicSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if not self.coordinator.last_update_success:
-            return False
-        val = self.coordinator.data.get(self._key)
-        return val not in (None, "", [])
+        return self.coordinator.last_update_success

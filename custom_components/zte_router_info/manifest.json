@@ -1,7 +1,7 @@
 {
   "domain": "zte_router_info",
   "name": "ZTE Router Info",
-  "version": "1.4.0",
+  "version": "1.4.4",
   "config_flow": true,
   "documentation": "https://github.com/MironJajtic/ha-zte-router-info",
   "issue_tracker": "https://github.com/MironJajtic/ha-zte-router-info/issues",
